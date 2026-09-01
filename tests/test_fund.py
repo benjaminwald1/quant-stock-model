@@ -123,3 +123,38 @@ def test_a_slot_never_exceeds_available_cash():
                        reference_prices=prices, sizing="equity")
     # equity/10 would be $410, but only $120 is actually spendable.
     assert next(o["budget"] for o in out["orders"] if o["ticker"] == "NEW") == 120.0
+
+
+def test_planned_exits_names_what_will_be_sold_and_why():
+    """The page has to be able to say this while the market is shut.
+
+    Resting orders already showed what the fund was waiting to buy; a holding
+    the rank rule had already condemned looked like any other position until it
+    silently disappeared. This is computed from current ranks, not from a trade.
+    """
+    from qsm.web.app import _planned_exits
+
+    state = {"holdings": [
+        {"ticker": "KEEP", "shares": 2, "entry_price": 100.0},
+        {"ticker": "DUMP", "shares": 3, "entry_price": 50.0},
+        {"ticker": "GONE", "shares": 1, "entry_price": 10.0},
+    ]}
+    ranks = {"KEEP": 91.0, "DUMP": 12.0}          # GONE is absent = unscored
+    quotes = {"KEEP": 110.0, "DUMP": 60.0, "GONE": 9.0}
+
+    out = _planned_exits(state, ranks, quotes, exit_below=30.0)
+    by = {e["ticker"]: e for e in out}
+
+    assert set(by) == {"DUMP", "GONE"}            # KEEP is above the exit
+    assert by["DUMP"]["rank"] == 12.0
+    assert by["DUMP"]["pnl"] == 30.0              # 3 x (60 - 50)
+    assert "below the 30 exit" in by["DUMP"]["reason"]
+    assert by["GONE"]["rank"] is None
+    assert "no longer scores it" in by["GONE"]["reason"]
+
+
+def test_planned_exits_is_empty_when_everything_still_ranks():
+    from qsm.web.app import _planned_exits
+
+    state = {"holdings": [{"ticker": "A", "shares": 1, "entry_price": 1.0}]}
+    assert _planned_exits(state, {"A": 55.0}, {"A": 2.0}, exit_below=30.0) == []

@@ -288,10 +288,14 @@ def watchlist_get(quotes: bool = True) -> JSONResponse:
             "budget": state.get("budget"), "value": state.get("value"),
             "pnl": state.get("pnl"), "pnl_pct": state.get("pnl_pct"),
             "cash": state.get("cash"), "checks_every": state.get("checks_every"),
+            "market_open": bool((state.get("market") or {}).get("is_open")),
             "benchmark_result": state.get("benchmark_result"),
             "vs_benchmark": state.get("vs_benchmark"),
             "holdings": [h["ticker"] for h in (state.get("holdings") or [])],
             "orders": [o["ticker"] for o in (state.get("orders") or [])],
+            "exiting": [e["ticker"] for e in (state.get("planned_exits") or [])],
+            "planned_exits": state.get("planned_exits") or [],
+            "exit_below": state.get("exit_below"),
             "resting": [
                 {"ticker": o.get("ticker"), "limit": o.get("limit"),
                  "reference": o.get("reference"),
@@ -519,6 +523,8 @@ def _fund_state():
                              enter_above=enter, exit_below=exit_,
                              max_positions=int(prefs.get("fund_max_positions", 10)),
                              sizing=prefs.get("fund_sizing", "equity"))
+        state["planned_exits"] = _planned_exits(state, latest, quotes, exit_)
+        state["exit_below"] = exit_
         bench_sym = state.get("benchmark", "SPY")
         try:
             spy = fetch_live([bench_sym], start="2026-01-01")
@@ -572,6 +578,39 @@ def _fund_state():
     closes = panel.pivot(index="date", columns="ticker", values="close").sort_index()
     bench = closes[state.get("benchmark", "SPY")] if state.get("benchmark", "SPY") in closes else None
     return fd.mark(closes, bench)
+
+
+def _planned_exits(state: dict, ranks_now, quotes: dict, exit_below: float) -> list[dict]:
+    """Holdings the model intends to sell, and why.
+
+    The resting orders already say what it is waiting to buy. The other half of
+    the plan was invisible: a name whose rank has fallen through the exit is
+    sold at the next open, and until then the page showed it as an ordinary
+    holding. Computed from the current ranks rather than from a trade, so it is
+    readable while the market is shut — which is exactly when you want to know
+    what happens at the bell.
+    """
+    out = []
+    for h in state.get("holdings") or []:
+        t = h["ticker"]
+        r = ranks_now.get(t)
+        scored = r == r and r is not None
+        if scored and float(r) >= exit_below:
+            continue
+        px = quotes.get(t)
+        shares, entry = h.get("shares", 0), h.get("entry_price")
+        value = round(shares * px, 2) if px else None
+        out.append({
+            "ticker": t,
+            "shares": shares,
+            "rank": round(float(r), 1) if scored else None,
+            "price": px,
+            "value": value,
+            "pnl": round(shares * (px - entry), 2) if px and entry else None,
+            "reason": (f"rank {float(r):.0f} is below the {exit_below:.0f} exit" if scored
+                       else "the model no longer scores it"),
+        })
+    return out
 
 
 def _watchlist_follow_fund(state: dict) -> None:

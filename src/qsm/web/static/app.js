@@ -1424,6 +1424,7 @@ async function loadWatchlist() {
   loadPlan();
   const held = new Set((d.fund && d.fund.holdings) || []);
   const wanted = new Set((d.fund && d.fund.orders) || []);
+  const exiting = new Set((d.fund && d.fund.exiting) || []);
 
   $('#wl-cards').innerHTML = d.rows.map(r => {
     const chg = r.change_pct;
@@ -1442,7 +1443,8 @@ async function loadWatchlist() {
       <div class="wl-chg ${cls}">${chg === null ? '' :
         (chg >= 0 ? '+' : '') + chg.toFixed(2) + '%'}</div>
       <div class="wl-meta">${meta}</div>
-      ${held.has(r.ticker) ? '<div class="wl-owned">the model owns this</div>'
+      ${exiting.has(r.ticker) ? '<div class="wl-exiting">the model plans to sell this</div>'
+        : held.has(r.ticker) ? '<div class="wl-owned">the model owns this</div>'
         : wanted.has(r.ticker) ? '<div class="wl-wanted">the model has an order resting here</div>'
         : ''}
       ${planLine(r, d.dip_pct)}
@@ -2288,6 +2290,19 @@ function renderFundStrip(f) {
       : o.timing ? ` · has not reached this in ${o.timing.sessions} sessions` : '') +
     `</span></li>`).join('');
 
+  // The other half of the plan. Without this a name the rank rule has already
+  // condemned sits on the page looking like any other holding until it
+  // silently disappears.
+  const exits = (f.planned_exits || []).map(e =>
+    `<li><strong>${e.ticker}</strong>` +
+    (e.shares ? ` · ${e.shares} share${e.shares === 1 ? '' : 's'}` : '') +
+    (e.value === null || e.value === undefined ? '' : ` worth ${fmtPrice(e.value, '$')}`) +
+    `<span class="sub"> · ${e.reason}` +
+    (e.pnl === null || e.pnl === undefined ? ''
+      : ` · would book <span class="${e.pnl >= 0 ? 'pos-v' : 'neg-v'}">` +
+        `${e.pnl >= 0 ? '+' : '−'}$${Math.abs(e.pnl).toFixed(2)}</span>`) +
+    `</span></li>`).join('');
+
   box.innerHTML =
     `<div class="perf-head">
        <span class="perf-total ${cls}">${f.pnl >= 0 ? '+' : '−'}$${Math.abs(f.pnl).toFixed(2)}</span>
@@ -2305,6 +2320,11 @@ function renderFundStrip(f) {
        nothing here is filled at a stale close.
        ${orders ? `<br><br><strong>Waiting to buy:</strong><ul class="wl-orders">${orders}</ul>`
                 : '<br><br>No orders resting right now.'}
+       ${exits ? `<strong>Plans to sell${f.market_open ? '' : ' at the next open'}:</strong>
+                  <ul class="wl-orders wl-exits">${exits}</ul>`
+               : `<br>Nothing is due to be sold — every holding is still above the ${
+                   f.exit_below === null || f.exit_below === undefined
+                     ? 'exit' : f.exit_below.toFixed(0)} exit.`}
      </p>`;
 }
 

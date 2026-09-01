@@ -494,3 +494,7 @@ ul.wl-orders li { margin-bottom: .25rem; }
 @media (max-width: 700px) {
   .act-row { grid-template-columns: 1fr; gap: .1rem; }
 }
+
+/* A holding the rank rule has already condemned. */
+.wl-exiting { font-size: .74rem; margin: .35rem 0 0; color: var(--bad); }
+ul.wl-exits li::marker { color: var(--bad); }
