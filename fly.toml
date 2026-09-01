@@ -1,0 +1,34 @@
+# Fly.io deployment. `fly launch --no-deploy` will offer to overwrite this —
+# decline, the volume mount and health check below are what make state persist.
+app = "qsm-console"
+primary_region = "iad"
+
+[build]
+
+[env]
+  QSM_DATA_DIR = "/state/data"
+  QSM_RUNS_DIR = "/state/runs"
+  QSM_REQUIRE_LOGIN = "1"
+  QSM_HTTPS = "1"
+
+[[mounts]]
+  source = "qsm_state"
+  destination = "/state"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  auto_stop_machines = false      # the fund must stay awake to trade
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    interval = "30s"
+    timeout = "5s"
+    grace_period = "40s"
+    method = "GET"
+    path = "/login"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "1gb"                  # pandas + LightGBM on 500 tickers

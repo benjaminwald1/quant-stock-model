@@ -1,0 +1,10 @@
+.venv/
+data/
+runs/
+logs/
+__pycache__/
+*.pyc
+.pytest_cache/
+*.egg-info/
+dist/
+.dockerignore.bak

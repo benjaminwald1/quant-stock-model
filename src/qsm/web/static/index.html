@@ -1,0 +1,529 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>qsm — quant research console</title>
+<link rel="stylesheet" href="/static/styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📈</text></svg>">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="mark">qsm</span>
+    <span class="tag">quant research console</span>
+  </div>
+  <div class="top-right">
+    <span id="env-pill" class="pill muted">checking…</span>
+    <button id="theme-toggle" class="icon-btn" title="Toggle theme" aria-label="Toggle theme">◐</button>
+  </div>
+</header>
+
+<div class="notice">
+  <strong>Research tool, not an investment product.</strong>
+  Every price source here — live feed included — covers only companies that exist today.
+  Delisted and bankrupt names are missing, so backtests are optimistic and no amount of
+  cross-validation fixes it. Live data makes the prices current, not the universe honest.
+  <a href="#" id="about-link">What else to watch for →</a>
+</div>
+
+<main class="layout">
+
+  <!-- ─────────────── sidebar ─────────────── -->
+  <aside class="sidebar">
+    <form id="run-form">
+      <h2>New run</h2>
+
+      <p class="hint">Real daily prices from the exchange, through the last close.</p>
+
+      <label>Universe
+        <select name="universe">
+          <option value="sp500">US — S&amp;P 500 (503)</option>
+          <option value="world">World — 343 across 22 exchanges</option>
+          <option value="us_all">US — every listed stock (5,874, slow first fetch)</option>
+          <option value="sp100">US — S&amp;P 100 (139)</option>
+          <option value="europe">Europe — 102</option>
+          <option value="asia">Asia-Pacific — 77</option>
+          <option value="americas">Americas ex-US — 25</option>
+          <option value="megacap">US mega cap — 30</option>
+          <option value="dow30">Dow 30</option>
+        </select>
+      </label>
+      <p class="hint" id="live-status"></p>
+
+      <div class="actions">
+        <button type="submit" class="primary" id="run-btn">Run backtest</button>
+      </div>
+
+      <details id="advanced">
+        <summary>Advanced settings</summary>
+
+        <h3>Forecast</h3>
+        <label>Horizon (trading days)
+          <input type="number" name="horizon" value="5" min="1" max="63">
+        </label>
+        <div class="row">
+          <label>Folds<input type="number" name="folds" value="6" min="1" max="12"></label>
+          <label>Embargo<input type="number" name="embargo" value="5" min="0" max="63"></label>
+        </div>
+        <div class="row">
+          <label>Start<input type="date" name="start" value="2015-01-01"></label>
+          <label>End<input type="date" name="end"></label>
+        </div>
+
+        <h3>Models</h3>
+        <div class="checks">
+          <label class="check"><input type="checkbox" name="models" value="ridge" checked> Ridge <span class="sub">linear baseline</span></label>
+          <label class="check"><input type="checkbox" name="models" value="lgbm" checked> LightGBM <span class="sub">gradient boosting</span></label>
+          <label class="check"><input type="checkbox" name="models" value="gru" id="gru-check"> GRU <span class="sub">sequence net</span></label>
+        </div>
+        <p class="hint" id="gru-hint"></p>
+
+        <h3>Portfolio</h3>
+        <div class="row">
+          <label>Quantile<input type="number" name="quantile" value="0.1" min="0.01" max="0.5" step="0.05"></label>
+          <label>Cost (bps)<input type="number" name="cost_bps" value="10" min="0" max="200" step="1"></label>
+        </div>
+        <label>Execution lag (days)
+          <input type="number" name="execution_lag" value="1" min="0" max="5">
+        </label>
+        <p class="hint">1 = a full session to trade after the signal exists.</p>
+
+        <h3>Live source</h3>
+        <label>Extra tickers
+          <input type="text" name="tickers" placeholder="PLTR, SNOW, COIN" autocomplete="off">
+        </label>
+        <label>Provider
+          <select name="provider"><option value="yahoo">Yahoo (no key needed)</option></select>
+        </label>
+        <label class="check"><input type="checkbox" name="refresh"> Force refresh <span class="sub">ignore cache</span></label>
+
+        <h3>Integrity</h3>
+        <button type="button" class="secondary full" id="null-btn"
+                title="Feed the pipeline pure noise; it must find nothing">Run null test</button>
+        <p class="hint">The leakage check. Run it after changing features or labels.</p>
+      </details>
+
+      <div>
+        <div class="warn-box">
+          <strong>Survivorship warning.</strong> These are companies listed <em>today</em>.
+          A backtest cannot see the names delisted or bankrupted along the way, so results are
+          optimistic. Fresher prices do not fix this.
+        </div>
+      </div>
+    </form>
+  </aside>
+
+  <!-- ─────────────── main ─────────────── -->
+  <section class="content">
+    <nav class="tabs">
+      <button class="tab active" data-tab="watchlist">Watchlist</button>
+      <button class="tab" data-tab="portfolio">Portfolio</button>
+      <button class="tab" data-tab="results">Results</button>
+      <button class="tab" data-tab="stocks">Stocks</button>
+      <button class="tab" data-tab="ledger">Track record</button>
+      <button class="tab" data-tab="settings">Settings</button>
+      <button class="tab" data-tab="jobs">Activity <span id="jobs-badge" class="badge hidden">0</span></button>
+      <button class="tab" data-tab="data">Data</button>
+      <button class="tab" data-tab="about">Reading the numbers</button>
+    </nav>
+
+    <!-- Results -->
+    <div class="panel" id="tab-results">
+      <div class="panel-head">
+        <label class="inline">Run
+          <select id="run-picker"><option value="">— no runs yet —</option></select>
+        </label>
+        <span id="run-meta" class="muted small"></span>
+      </div>
+      <div id="results-empty" class="empty">
+        <p class="big">No run selected.</p>
+        <p>Configure a run on the left and press <strong>Run backtest</strong>. A 300-name synthetic run takes well under a minute.</p>
+      </div>
+      <div id="results-body" class="hidden">
+        <div id="verdict" class="verdict"></div>
+        <div id="cards" class="cards"></div>
+
+        <section class="card">
+          <h3>Out-of-sample equity <span class="sub">net of costs</span></h3>
+          <div id="chart-equity" class="chart"></div>
+          <div id="equity-legend" class="legend"></div>
+        </section>
+
+        <div class="two-col">
+          <section class="card">
+            <h3>Signal decile returns <span class="sub">monotonicity check</span></h3>
+            <div id="chart-quantiles" class="chart small"></div>
+            <p class="hint">A trustworthy signal makes a staircase from Q1 to Q5. If only the extreme bin works, the edge is probably one narrow corner of the universe.</p>
+          </section>
+          <section class="card">
+            <h3>Feature importance</h3>
+            <div id="chart-importance" class="chart small"></div>
+          </section>
+        </div>
+
+        <section class="card">
+          <h3>Full metrics</h3>
+          <div class="table-wrap"><table id="summary-table"></table></div>
+        </section>
+
+        <div class="two-col">
+          <section class="card">
+            <h3>Walk-forward folds</h3>
+            <pre id="folds" class="folds"></pre>
+          </section>
+          <section class="card">
+            <h3>Artifacts</h3>
+            <div id="downloads" class="downloads"></div>
+            <h3 style="margin-top:1.2rem">Static report</h3>
+            <a id="report-link" href="#" target="_blank"><img id="report-img" class="report" alt="Run report"></a>
+          </section>
+        </div>
+      </div>
+    </div>
+
+
+    <!-- Watchlist -->
+    <div class="panel active" id="tab-watchlist">
+      <div class="search-bar">
+        <input type="search" id="wl-add" placeholder="Add a ticker — AAPL, 7203.T, SHEL.L …" autocomplete="off" spellcheck="false">
+        <button type="button" class="primary" id="wl-add-btn" style="flex:none;min-width:90px">Add</button>
+      </div>
+      <div class="live-strip">
+        <span class="dot-live" id="wl-dot"></span>
+        <span id="wl-market">—</span>
+        <label class="switch"><input type="checkbox" id="wl-auto" checked> auto-update</label>
+        <button type="button" class="tiny" id="wl-refresh">Refresh now</button>
+      </div>
+      <div id="wl-empty" class="empty hidden">
+        <p class="big">Your watchlist is empty.</p>
+        <p>Add a ticker above. Anything the feed carries works — US, Europe, Asia.</p>
+      </div>
+      <div id="wl-plan" class="card hidden"></div>
+      <div id="wl-fund" class="card hidden"></div>
+      <div id="wl-cards" class="wl-grid"></div>
+      <p class="hint" id="wl-note"></p>
+    </div>
+
+    <!-- Portfolio -->
+    <div class="panel" id="tab-portfolio">
+      <section class="card" id="fund-card">
+        <div class="range-head">
+          <h3>Model fund <span class="sub">the model invests on its own</span></h3>
+          <button type="button" class="tiny" id="fund-reset">Restart</button>
+        </div>
+        <div id="fund-body"></div>
+      </section>
+
+      <h3 style="margin:1.2rem 0 .6rem">Your holdings</h3>
+      <div id="pf-summary" class="cards"></div>
+      <section class="card" id="pf-analytics-card">
+        <div class="range-head">
+          <h3>Analytics</h3>
+          <label class="inline" style="margin-left:auto;font-size:.78rem">Compare with
+            <input type="text" id="pf-bench" value="SPY,QQQ" style="width:130px;margin:0">
+          </label>
+        </div>
+        <div id="pf-analytics"></div>
+      </section>
+
+      <section class="card">
+        <div class="range-head">
+          <h3>If the model had <span id="sim-amount">$10,000</span></h3>
+          <div class="ranges" id="sim-presets">
+            <button type="button" class="rng" data-bal="1000">$1k</button>
+            <button type="button" class="rng active" data-bal="10000">$10k</button>
+            <button type="button" class="rng" data-bal="50000">$50k</button>
+            <button type="button" class="rng" data-bal="100000">$100k</button>
+          </div>
+        </div>
+        <div class="search-bar">
+          <input type="number" id="sim-balance" value="10000" min="100" step="100"
+                 placeholder="Balance to simulate">
+          <button type="button" class="primary" id="sim-run" style="flex:none;min-width:110px">Simulate</button>
+        </div>
+        <div id="sim-out"></div>
+      </section>
+
+      <section class="card">
+        <div class="range-head">
+          <h3>Holdings</h3>
+          <button type="button" class="tiny" id="pf-clear">Clear all</button>
+        </div>
+        <div id="pf-empty" class="empty hidden">
+          <p class="big">Nothing held yet.</p>
+          <p>Press <strong>Buy</strong> on any watchlist card to record a position here.</p>
+        </div>
+        <div class="table-wrap"><table id="pf-table"></table></div>
+        <p class="hint">
+          A paper record, not a broker. Nothing is ordered — quantities and entry prices are what
+          you told it, valued at the latest price. No costs, tax or slippage are applied.
+        </p>
+      </section>
+    </div>
+
+    <!-- Stocks -->
+    <div class="panel" id="tab-stocks">
+      <div class="search-bar">
+        <input type="search" id="stock-q" placeholder="Search ticker — e.g. AAPL, or just A" autocomplete="off" spellcheck="false">
+        <select id="stock-model" title="Which model's view"></select>
+        <select id="stock-sort">
+          <option value="rank">Top ranked now</option>
+          <option value="contribution">Best contributors</option>
+          <option value="worst">Worst contributors</option>
+          <option value="days_long">Most days long</option>
+          <option value="days_short">Most days short</option>
+          <option value="ticker">A–Z</option>
+        </select>
+      </div>
+      <div class="seg seg-wide" id="stock-position">
+        <button type="button" class="seg-btn active" data-pos="all">All names</button>
+        <button type="button" class="seg-btn" data-pos="held">In the book</button>
+        <button type="button" class="seg-btn" data-pos="long">Long now</button>
+        <button type="button" class="seg-btn" data-pos="short">Short now</button>
+      </div>
+      <p class="hint" id="stock-meta"></p>
+      <div class="warn-box" id="stock-warn">
+        <strong>These are backtest outputs, not recommendations.</strong>
+        “Long / short” is what the model’s rule <em>would have</em> held on the last day of the
+        tested sample, from a strategy whose own net Sharpe you can read on the Results tab.
+        It has not been risk-checked, it ignores your existing positions and taxes, and on a
+        universe of companies listed today it is measured with survivorship bias baked in.
+      </div>
+
+      <div id="stock-unavailable" class="empty hidden">
+        <p class="big">No per-stock data for this run.</p>
+        <p id="stock-unavailable-msg"></p>
+      </div>
+
+      <div class="live-strip" id="live-strip">
+        <span class="dot-live" id="live-dot"></span>
+        <span id="live-label">Live prices off</span>
+        <label class="switch"><input type="checkbox" id="live-toggle"> auto-update</label>
+        <button type="button" class="tiny" id="live-once">Refresh now</button>
+      </div>
+
+      <div class="live-strip" id="fc-strip">
+        <label class="switch"><input type="checkbox" id="fc-toggle"> Show forward value estimate</label>
+        <span id="fc-summary" class="sub"></span>
+      </div>
+      <div id="fc-note" class="warn-box hidden"></div>
+
+      <div id="stock-detail" class="card hidden"></div>
+
+      <section class="card" id="stock-table-card">
+        <div class="table-wrap"><table id="stock-table"></table></div>
+        <p class="hint" id="stock-footnote"></p>
+      </section>
+    </div>
+
+    <!-- Track record -->
+    <div class="panel" id="tab-ledger">
+      <section class="card">
+        <h3>Live forecast record</h3>
+        <p class="hint">
+          Every time you run <code>qsm update</code>, that day's forecasts are written down.
+          Once the horizon elapses the real outcome is joined on. This is the model's record on
+          predictions whose answers were genuinely unknown when it made them — the backtest
+          numbers elsewhere are replays.
+        </p>
+        <div id="ledger-cards" class="cards"></div>
+        <div id="ledger-models"></div>
+      </section>
+      <section class="card">
+        <h3>Update history</h3>
+        <div class="table-wrap"><table id="ledger-history"></table></div>
+        <pre class="code">cd /Users/Johnny/quant-stock-model
+.venv/bin/qsm update --universe sp500</pre>
+      </section>
+    </div>
+
+    <!-- Settings -->
+    <div class="panel" id="tab-settings">
+      <div class="two-col">
+        <section class="card">
+          <h3>Display</h3>
+          <label>Theme
+            <select data-setting="theme">
+              <option value="system">Match system</option>
+              <option value="light">Light</option>
+              <option value="dark">Dark</option>
+            </select>
+          </label>
+          <label>Detail level
+            <select data-setting="detail_level">
+              <option value="simple">Simple — plain language</option>
+              <option value="detailed">Detailed — all stats and notes</option>
+            </select>
+          </label>
+          <label>Default chart range
+            <select data-setting="default_range">
+              <option value="1d">1D</option><option value="3d">3D</option>
+              <option value="5d">5D</option><option value="1mo">1M</option>
+              <option value="3mo">3M</option><option value="6mo">6M</option>
+              <option value="ytd">YTD</option><option value="1y">1Y</option>
+              <option value="max">MAX</option>
+            </select>
+          </label>
+          <label class="check"><input type="checkbox" data-setting="currency_symbols">
+            Show currency symbols <span class="sub">¥, €, p …</span></label>
+        </section>
+
+        <section class="card">
+          <h3>Live prices</h3>
+          <label class="check"><input type="checkbox" data-setting="watchlist_autoupdate">
+            Auto-update the watchlist</label>
+          <label class="check"><input type="checkbox" data-setting="live_autoupdate">
+            Auto-update prices in the stock table</label>
+          <label>Refresh every (seconds)
+            <input type="number" data-setting="live_interval_s" min="5" max="600" step="5">
+          </label>
+          <p class="hint">Polling pauses automatically while this tab is in the background.</p>
+        </section>
+      </div>
+
+      <section class="card">
+        <h3>Run defaults</h3>
+        <div class="two-col">
+          <div>
+            <label>Universe
+              <select data-setting="default_universe">
+                <option value="sp500">US — S&amp;P 500</option>
+                <option value="world">World</option>
+                <option value="us_all">US — every listed stock</option>
+                <option value="sp100">US — S&amp;P 100</option>
+                <option value="europe">Europe</option>
+                <option value="asia">Asia-Pacific</option>
+                <option value="americas">Americas ex-US</option>
+                <option value="megacap">US mega cap</option>
+                <option value="dow30">Dow 30</option>
+              </select>
+            </label>
+            <div class="row">
+              <label>Horizon (days)<input type="number" data-setting="default_horizon" min="1" max="63"></label>
+              <label>Folds<input type="number" data-setting="default_folds" min="1" max="12"></label>
+            </div>
+          </div>
+          <div>
+            <div class="row">
+              <label>Cost (bps)<input type="number" data-setting="default_cost_bps" min="0" max="200" step="1"></label>
+              <label>Quantile<input type="number" data-setting="default_quantile" min="0.01" max="0.5" step="0.05"></label>
+            </div>
+            <p class="hint">These pre-fill the New run panel. Changing them here does not re-run anything.</p>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h3>Account &amp; environment</h3>
+        <p class="hint">
+          This runs entirely on your machine — there is no account, no login and no data leaves
+          your computer except the price requests to the data provider.
+        </p>
+        <div id="settings-env"></div>
+      </section>
+
+      <section class="card">
+        <div class="actions">
+          <button type="button" class="secondary" id="settings-reset">Reset all settings</button>
+          <span class="hint" id="settings-saved" style="align-self:center"></span>
+        </div>
+      </section>
+    </div>
+
+    <!-- Jobs -->
+    <div class="panel" id="tab-jobs">
+      <section class="card">
+        <div class="range-head">
+          <h3>What the model did <span id="act-status" class="sub"></span></h3>
+          <div class="ranges" id="act-filter">
+            <button type="button" class="rng active" data-k="all">Everything</button>
+            <button type="button" class="rng" data-k="trade">Trades</button>
+            <button type="button" class="rng" data-k="learning">Learning</button>
+            <button type="button" class="rng" data-k="watchlist">Watchlist</button>
+          </div>
+        </div>
+        <p class="hint" id="act-note"></p>
+        <div id="act-log" class="act-log"></div>
+      </section>
+      <section class="card" id="job-console-card">
+        <h3>Console <span id="console-label" class="sub"></span></h3>
+        <pre id="console" class="console">Nothing running.</pre>
+      </section>
+      <div id="job-list" class="job-list"></div>
+    </div>
+
+    <!-- Data -->
+    <div class="panel" id="tab-data">
+      <section class="card">
+        <h3>Live feed</h3>
+        <div id="dataset-status"></div>
+        <p class="hint">
+          Daily adjusted prices from Yahoo — no API key or account needed. Downloads are cached for
+          12 hours; tick <em>Force refresh</em> under Advanced settings to pull fresh bars.
+        </p>
+      </section>
+    </div>
+
+    <!-- About -->
+    <div class="panel" id="tab-about">
+      <section class="card prose">
+        <h3>What the numbers mean</h3>
+        <dl>
+          <dt>IC (information coefficient)</dt>
+          <dd>Daily rank correlation between the forecast and what actually happened. This is the
+          cleanest read on forecast quality because it does not depend on how you build the
+          portfolio. <strong>0.01–0.03 is a real signal.</strong> Above 0.15 on daily data is almost
+          always a bug — start with the null test.</dd>
+
+          <dt>IC t-stat</dt>
+          <dd>Whether that IC is distinguishable from zero. Below about 2, you have not found
+          anything, regardless of how good the equity curve looks.</dd>
+
+          <dt>Sharpe before vs after costs</dt>
+          <dd>The gap is what trading costs you. A signal that only works before costs is not a
+          strategy. Raise the cost slider until it breaks — that tells you the real margin.</dd>
+
+          <dt>Turnover</dt>
+          <dd>Fraction of the book traded per day. High turnover against a thin edge is a donation
+          to your broker.</dd>
+
+          <dt>Max drawdown</dt>
+          <dd>Peak-to-trough loss. The number that actually ends strategies, since it determines
+          whether you are still holding the position when it recovers.</dd>
+        </dl>
+
+        <h3>Why the null test matters</h3>
+        <p>Backtest bugs almost always produce <em>good-looking</em> results, so a strong number is
+        weak evidence on its own. The null test runs the whole pipeline on data containing no
+        signal at all, where the correct answer is “nothing.” Run it after any change you make to
+        features or labels. If it passes, you did not introduce lookahead.</p>
+
+        <h3>Known limitations</h3>
+        <ul>
+          <li><strong>Survivorship bias — including on the live feed.</strong> A price API tells
+          you what companies trading <em>today</em> did in the past. It cannot tell you which names
+          were in the index in 2016 and have since been delisted, and the preset universes are
+          lists of firms prominent now. Every backtest here is therefore optimistic. Fresher
+          prices do not fix this; point-in-time constituent data (CRSP, Compustat, Sharadar)
+          does, and it is not free.</li>
+          <li><strong>Stale data on the archives.</strong> Kaggle coverage ends 2017 (huge) or
+          2020 (jackson). The live source runs to the last close.</li>
+          <li><strong>No sector neutrality.</strong> The book can concentrate in one sector, so some
+          apparent alpha may be an uncompensated factor tilt.</li>
+          <li><strong>Simplified costs.</strong> A flat per-notional charge. Real costs include the
+          spread, market impact, borrow fees, and names you simply cannot short.</li>
+          <li><strong>Multiple testing.</strong> Every knob you turn while watching the result spends
+          some of the sample's validity. The walk-forward is honest per run; it cannot protect you
+          from picking the best of fifty runs.</li>
+        </ul>
+      </section>
+    </div>
+
+  </section>
+</main>
+
+<script src="/static/app.js"></script>
+</body>
+</html>
