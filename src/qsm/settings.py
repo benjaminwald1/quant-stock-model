@@ -47,6 +47,12 @@ DEFAULTS: dict = {
     "fund_enter_above": 90.0,
     "fund_exit_below": 30.0,
     "fund_max_positions": 10,
+    # Sell winners at a peak. Off because it was measured and it loses: on the
+    # holdout, 5.49% a year selling at a 60-session high and 8.87% selling at
+    # the model's 80% upper band, against 12.30% for leaving it to the rank
+    # rule — worse in every window tested, at 2-3x the trades. See
+    # experiments/peak_exit.py.
+    "fund_take_profit": "off",
     # learning
     "auto_learn": True,            # retrain and score the ledger once a day
     "auto_learn_universe": "us_all",   # blank = repeat whatever the last run used
@@ -56,6 +62,7 @@ DEFAULTS: dict = {
 
 _ENUMS = {
     "fund_sizing": {"equity", "cash"},
+    "fund_take_profit": {"off", "peak"},
     "theme": {"system", "light", "dark"},
     "detail_level": {"simple", "detailed"},
     "default_range": {"1d", "3d", "5d", "1mo", "3mo", "6mo", "ytd", "1y", "max"},

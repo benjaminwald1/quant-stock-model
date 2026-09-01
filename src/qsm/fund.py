@@ -160,7 +160,8 @@ def rebalance(state: dict, closes, ranks, enter_above: float = 90.0,
               exit_below: float = 30.0, max_positions: int = 10,
               live_prices: dict | None = None, market_open: bool = True,
               dip_pct: float = 0.01, reference_prices: dict | None = None,
-              sizing: str = "equity") -> dict:
+              sizing: str = "equity", take_profit: str = "off",
+              peak_lookback: int = 60) -> dict:
     """Act on the model's signal for one session.
 
     Hold a name while the model still ranks it highly; sell when it drops out.
@@ -214,6 +215,38 @@ def rebalance(state: dict, closes, ranks, enter_above: float = 90.0,
     def price_of(t):
         v = live_prices.get(t)
         return float(v) if v is not None and v == v and v > 0 else None
+
+    # ── take profit at a peak, when asked ────────────────────────────────
+    # Off by default, and measured before being offered at all
+    # (experiments/peak_exit.py): selling on a new 60-session high scored 5.49%
+    # a year on the holdout against 12.30% for letting the rank rule decide, and
+    # was worse in every window on both halves of the split. Selling at the top
+    # of the model's own 80% band was worse again. It is the most intuitive rule
+    # in trading and it caps the winners while the losers keep running.
+    for ticker in list(holdings):
+        if take_profit != "peak":
+            break
+        px = price_of(ticker)
+        if px is None or ticker not in closes.columns:
+            continue
+        hist = closes[ticker].dropna()
+        # Enough history to know what a peak is, scaled to the window asked
+        # for. A flat floor silently disabled the rule for short lookbacks.
+        if len(hist) < max(3, peak_lookback // 2):
+            continue
+        peak = float(hist.iloc[-peak_lookback:].max())
+        if px < peak:
+            continue
+        h = holdings.pop(ticker)
+        proceeds = h["shares"] * px
+        cash += proceeds
+        log.append({
+            "date": stamp, "action": "sell", "ticker": ticker,
+            "shares": h["shares"], "price": round(px, 4),
+            "value": round(proceeds, 2),
+            "pnl": round(proceeds - h["shares"] * h["entry_price"], 2),
+            "reason": f"at a {peak_lookback}-session high of {peak:,.2f}",
+        })
 
     # ── exits: the model no longer rates it ──────────────────────────────
     for ticker in list(holdings):

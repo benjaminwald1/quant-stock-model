@@ -158,3 +158,40 @@ def test_planned_exits_is_empty_when_everything_still_ranks():
 
     state = {"holdings": [{"ticker": "A", "shares": 1, "entry_price": 1.0}]}
     assert _planned_exits(state, {"A": 55.0}, {"A": 2.0}, exit_below=30.0) == []
+
+
+def _peak_frames():
+    """Six sessions where AAA ends at its highest close and BBB does not."""
+    idx = pd.to_datetime([f"2026-08-{d:02d}" for d in (24, 25, 26, 27, 28, 31)])
+    closes = pd.DataFrame({"AAA": [90.0, 92.0, 95.0, 93.0, 96.0, 104.0],
+                           "BBB": [220.0, 240.0, 235.0, 225.0, 215.0, 210.0]}, index=idx)
+    ranks = pd.DataFrame({"AAA": [95.0] * 6, "BBB": [95.0] * 6}, index=idx)
+    return closes, ranks
+
+
+def test_take_profit_is_off_by_default():
+    """Measured worse than letting the rank rule decide, so it must not creep on.
+
+    experiments/peak_exit.py: 5.49% a year on the holdout selling at a peak
+    against 12.30% leaving it alone, worse in every window and at 2-3x the
+    trades. A holding at its high stays held unless the setting is switched.
+    """
+    closes, ranks = _peak_frames()
+    prices = {"AAA": 104.0, "BBB": 210.0}
+    out = fd.rebalance(_state(), closes, ranks, live_prices=prices,
+                       market_open=True, reference_prices=prices)
+
+    assert not [t for t in out["trades"] if t["action"] == "sell"]
+    assert {h["ticker"] for h in out["holdings"]} == {"AAA", "BBB"}
+
+
+def test_take_profit_sells_only_the_name_at_its_peak():
+    closes, ranks = _peak_frames()
+    prices = {"AAA": 104.0, "BBB": 210.0}
+    out = fd.rebalance(_state(), closes, ranks, live_prices=prices, market_open=True,
+                       reference_prices=prices, take_profit="peak", peak_lookback=5)
+
+    sells = [t for t in out["trades"] if t["action"] == "sell"]
+    assert [s["ticker"] for s in sells] == ["AAA"]      # BBB is well off its high
+    assert "session high" in sells[0]["reason"]
+    assert [h["ticker"] for h in out["holdings"]] == ["BBB"]

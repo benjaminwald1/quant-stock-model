@@ -522,7 +522,8 @@ def _fund_state():
                              reference_prices=prev_close,
                              enter_above=enter, exit_below=exit_,
                              max_positions=int(prefs.get("fund_max_positions", 10)),
-                             sizing=prefs.get("fund_sizing", "equity"))
+                             sizing=prefs.get("fund_sizing", "equity"),
+                             take_profit=prefs.get("fund_take_profit", "off"))
         state["planned_exits"] = _planned_exits(state, latest, quotes, exit_)
         state["exit_below"] = exit_
         bench_sym = state.get("benchmark", "SPY")

@@ -57,13 +57,30 @@ def find_panel(run: str) -> str:
 def replay(run: str, panel_path: str, months: int = 3, budget: float = 5000.0,
            sizing: str = "cash", enter_above: float = 90.0, exit_below: float = 70.0,
            max_positions: int = 10, dip_pct: float = 0.01, end: str | None = None,
-           cost_bps: float = 10.0) -> dict:
+           cost_bps: float = 10.0, take_profit: str | None = None,
+           peak_lookback: int = 60) -> dict:
     view = stocks_mod.load_view(Path("runs") / run)
     px = pd.read_parquet(panel_path)
     px["date"] = pd.to_datetime(px["date"])
 
     close = px.pivot(index="date", columns="ticker", values="close").sort_index()
     low = px.pivot(index="date", columns="ticker", values="low").sort_index()
+    high = px.pivot(index="date", columns="ticker", values="high").sort_index()
+
+    # "At its peak" needs a definition. Two defensible ones:
+    #   peak  the price has made a new `peak_lookback`-session high — the plain
+    #         reading, a technical top with no model input
+    #   band  the gain since entry has reached the top of the model's own 80%
+    #         forecast for that name's decile, i.e. the move it predicted has
+    #         already happened and it has no stated edge left
+    rolling_max = close.rolling(peak_lookback, min_periods=peak_lookback // 2).max()
+    bin_stats = None
+    if take_profit == "band":
+        from qsm.forecast import Z80, calibrate
+        panel = pd.read_parquet(Path("runs") / run / "ticker_panel.parquet")
+        cal = calibrate(view.signal, panel["fwd_ret"].unstack())
+        nb = int(cal["n_bins"])
+        bin_stats = (nb, Z80, [(float(b["mean"]), float(b["std"])) for b in cal["bins"]])
 
     ranks = view.rank.sort_index()
     dates = [d for d in close.index if d in ranks.index]
@@ -98,6 +115,31 @@ def replay(run: str, panel_path: str, months: int = 3, budget: float = 5000.0,
             p = close.loc[day, t] if t in close.columns else float("nan")
             if p != p:
                 continue
+
+            peaked, why = False, ""
+            if take_profit == "peak":
+                rm = rolling_max.loc[day, t] if t in rolling_max.columns else float("nan")
+                hi = high.loc[day, t] if t in high.columns else float("nan")
+                if rm == rm and hi == hi and hi >= rm:
+                    peaked, why = True, f"new {peak_lookback}-session high"
+            elif take_profit == "band" and holdings[t].get("target"):
+                hi = high.loc[day, t] if t in high.columns else float("nan")
+                if hi == hi and hi >= holdings[t]["target"]:
+                    peaked, why = True, "reached the model's 80% upper band"
+                    p = holdings[t]["target"]      # filled at the target, not the high
+
+            if peaked:
+                h = holdings.pop(t)
+                gross = h["shares"] * float(p)
+                fee = gross * cost_rate
+                costs_paid += fee
+                cash += gross - fee
+                trades.append({"date": str(day.date()), "action": "sell", "ticker": t,
+                               "shares": h["shares"], "price": round(float(p), 4),
+                               "pnl": round(h["shares"] * (float(p) - h["entry_price"]) - fee, 2),
+                               "reason": why})
+                continue
+
             if r is None or r != r or r < exit_below:
                 h = holdings.pop(t)
                 gross = h["shares"] * float(p)
@@ -125,8 +167,17 @@ def replay(run: str, panel_path: str, months: int = 3, budget: float = 5000.0,
                     fee = shares * fill * cost_rate
                     costs_paid += fee
                     cash -= shares * fill + fee
+                    tgt = None
+                    if bin_stats:
+                        nb, z, stats = bin_stats
+                        rk = ranks.loc[prev].get(t)
+                        if rk == rk:
+                            bi = int(min(max(int(rk / 100 * nb), 0), nb - 1))
+                            mu, sd = stats[bi]
+                            tgt = fill * (1 + mu + z * sd)
                     holdings[t] = {"ticker": t, "shares": shares,
-                                   "entry_price": round(fill, 4), "entry_date": str(day.date())}
+                                   "entry_price": round(fill, 4), "entry_date": str(day.date()),
+                                   "target": tgt}
                     trades.append({"date": str(day.date()), "action": "buy", "ticker": t,
                                    "shares": shares, "price": round(fill, 4),
                                    "value": round(shares * fill, 2)})
@@ -195,6 +246,7 @@ if __name__ == "__main__":
     ap.add_argument("--months", type=int, default=3)
     ap.add_argument("--budget", type=float, default=5000.0)
     ap.add_argument("--end", default=None, help="last session to include, YYYY-MM-DD")
+    ap.add_argument("--take-profit", default=None, choices=["peak", "band"])
     ap.add_argument("--show-trades", action="store_true")
     a = ap.parse_args()
 
@@ -202,7 +254,7 @@ if __name__ == "__main__":
     rows = []
     for sizing in ("cash", "equity"):
         out = replay(a.run, panel, months=a.months, budget=a.budget, sizing=sizing,
-                     end=a.end)
+                     end=a.end, take_profit=a.take_profit)
         rows.append(out)
 
     print(f"fund rule replayed on {a.run} · {rows[0]['from']} to {rows[0]['to']} "
