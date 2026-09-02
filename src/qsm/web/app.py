@@ -429,17 +429,36 @@ class FundRequest(BaseModel):
     run: str | None = None
 
 
-def _fund_run(state: dict) -> str:
-    """The newest run that scores everything this fund is holding.
+def _run_horizon(name: str) -> int | None:
+    cfg = RUNS_DIR / name / "config.json"
+    try:
+        return int(json.loads(cfg.read_text())["labels"]["horizon"])
+    except Exception:
+        return None
 
-    Switching to a run that has never heard of a holding would read as "no
-    longer scored" and dump the position for a reason that is really about
-    coverage, not the model changing its mind.
+
+def _fund_run(state: dict) -> str:
+    """The newest run that scores everything this fund is holding, at its horizon.
+
+    Two guards, both learned the hard way.
+
+    Coverage: switching to a run that has never heard of a holding reads as "no
+    longer scored" and dumps the position for a reason that is about coverage,
+    not the model changing its mind.
+
+    Horizon: a rank from a 1-day model does not mean what a rank from a 5-day
+    model means, and the entry and exit thresholds were tuned against the
+    latter. Without this, any run left on disk becomes the fund's brain — an
+    afternoon of horizon experiments silently put a model measured at Sharpe
+    -0.30 in charge of real positions.
     """
     held = {h["ticker"] for h in (state.get("holdings") or [])}
     pinned = state.get("run")
+    want = _run_horizon(pinned) if pinned else None
     for entry in list_run_dirs()[:10]:
         name = entry["name"]
+        if want is not None and _run_horizon(name) != want:
+            continue
         try:
             tickers, _ = _run_universe(name)
         except Exception:

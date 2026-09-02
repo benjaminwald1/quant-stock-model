@@ -58,7 +58,8 @@ def replay(run: str, panel_path: str, months: int = 3, budget: float = 5000.0,
            sizing: str = "cash", enter_above: float = 90.0, exit_below: float = 70.0,
            max_positions: int = 10, dip_pct: float = 0.01, end: str | None = None,
            cost_bps: float = 10.0, take_profit: str | None = None,
-           peak_lookback: int = 60) -> dict:
+           peak_lookback: int = 60, hedge: float = 0.0,
+           hedge_symbol: str = "SPY", borrow_bps_yr: float = 100.0) -> dict:
     view = stocks_mod.load_view(Path("runs") / run)
     px = pd.read_parquet(panel_path)
     px["date"] = pd.to_datetime(px["date"])
@@ -91,7 +92,23 @@ def replay(run: str, panel_path: str, months: int = 3, budget: float = 5000.0,
     if len(dates) < 5:
         raise SystemExit("not enough overlapping sessions")
 
+    # Short `hedge` x the invested value in the index. The model is calibrated
+    # on return *relative to the universe* — its own calibration demeans each
+    # date — so a long-only book carries a market bet the model never made.
+    hedge_px = None
+    if hedge > 0:
+        try:
+            from qsm.live import fetch_live
+            hp = fetch_live([hedge_symbol], start="2011-08-31")
+            hedge_px = hp.pivot(index="date", columns="ticker",
+                                values="close")[hedge_symbol].sort_index()
+        except Exception:
+            hedge_px = None
+
     cash = float(budget)
+    hedge_units = 0.0            # negative: shares of the index sold short
+    hedge_basis = 0.0            # proceeds credited when the short was opened
+    borrow_rate_daily = borrow_bps_yr / 10_000.0 / 252.0
     equity_curve: list[float] = []
     cost_rate = cost_bps / 10_000.0
     costs_paid = 0.0
@@ -99,11 +116,24 @@ def replay(run: str, panel_path: str, months: int = 3, budget: float = 5000.0,
     orders: dict[str, dict] = {}
     trades: list[dict] = []
 
+    def hedge_price(day):
+        if hedge_px is None:
+            return None
+        v = hedge_px.asof(day)
+        return float(v) if v == v else None
+
     def equity(day):
         held = sum(h["shares"] * float(close.loc[day, h["ticker"]])
                    for h in holdings.values()
                    if h["ticker"] in close.columns and close.loc[day, h["ticker"]] == close.loc[day, h["ticker"]])
-        return cash + held
+        short_pl = 0.0
+        if hedge_units:
+            hp = hedge_price(day)
+            if hp is not None:
+                # Short: gains when the index falls. Proceeds are already in
+                # `cash`, so only the mark-to-market difference is added.
+                short_pl = hedge_basis - abs(hedge_units) * hp
+        return cash + held + short_pl
 
     for i in range(1, len(dates)):
         day, prev = dates[i], dates[i - 1]
@@ -184,6 +214,26 @@ def replay(run: str, panel_path: str, months: int = 3, budget: float = 5000.0,
                                    "value": round(shares * fill, 2)})
                 orders.pop(t, None)
 
+        # Re-set the hedge to `hedge` x the long book, and pay to borrow it.
+        if hedge > 0 and hedge_px is not None:
+            hp = hedge_price(day)
+            if hp is not None:
+                longs = sum(h["shares"] * float(close.loc[day, h["ticker"]])
+                            for h in holdings.values()
+                            if h["ticker"] in close.columns
+                            and close.loc[day, h["ticker"]] == close.loc[day, h["ticker"]])
+                if hedge_units:
+                    cash -= abs(hedge_units) * hp * borrow_rate_daily
+                want = longs * hedge / hp
+                if abs(want - abs(hedge_units)) * hp > 25:      # avoid churn
+                    cash += (hedge_basis - abs(hedge_units) * hp)   # close old
+                    costs_paid += abs(abs(hedge_units) - want) * hp * cost_rate
+                    cash -= abs(abs(hedge_units) - want) * hp * cost_rate
+                    hedge_units = -want
+                    hedge_basis = want * hp
+                else:
+                    hedge_basis += 0.0
+
         equity_curve.append(equity(day))
 
         # ── place new orders ─────────────────────────────────────────────
@@ -242,6 +292,7 @@ def replay(run: str, panel_path: str, months: int = 3, budget: float = 5000.0,
         "realised": round(sum(t["pnl"] for t in sells), 2),
         "win_rate": round(len(wins) / len(sells), 3) if sells else None,
         "max_drawdown_pct": round(max_dd * 100, 2),
+        "hedge": hedge,
         "costs_paid": round(costs_paid, 2), "cost_bps": cost_bps,
         "turnover_trades": sum(1 for t in trades if t["action"] in ("buy", "sell")),
         "benchmark_pct": round(bench_pct, 2),

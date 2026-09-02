@@ -267,3 +267,39 @@ def test_benchmark_anchors_to_inception_and_survives_timestamps():
     # Fully invested and fractional, so cash drag does not flatter the fund.
     units = 5000 / float(a)
     assert round(units * float(b), 2) == 4966.56
+
+
+def test_fund_run_selection_requires_a_matching_horizon(tmp_path, monkeypatch):
+    """An experiment left on disk must not become the fund's brain.
+
+    The fund follows the newest run that covers its holdings. Coverage alone is
+    not enough: an afternoon of horizon experiments produced a 1-day and a 2-day
+    model over the same universe, and the selector picked the 2-day one — which
+    had measured Sharpe -0.30 and -12.3% annualised — to trade real positions
+    with thresholds tuned for a 5-day model.
+    """
+    import json as _json
+
+    from qsm.web import app as web
+
+    runs = tmp_path / "runs"
+    universes = {}
+    for name, horizon in (("20260901-193344-h2", 2),
+                          ("20260901-185654-h1", 1),
+                          ("20260831-171523-full15y", 5)):
+        d = runs / name
+        d.mkdir(parents=True)
+        (d / "config.json").write_text(_json.dumps({"labels": {"horizon": horizon}}))
+        universes[name] = (frozenset({"AAA", "BBB"}), "2026-09-01")
+
+    monkeypatch.setattr(web, "RUNS_DIR", runs)
+    monkeypatch.setattr(web, "list_run_dirs",
+                        lambda: [{"name": n} for n in
+                                 ("20260901-193344-h2", "20260901-185654-h1",
+                                  "20260831-171523-full15y")])
+    monkeypatch.setattr(web, "_run_universe", lambda n: universes[n])
+
+    state = {"run": "20260831-171523-full15y",
+             "holdings": [{"ticker": "AAA"}, {"ticker": "BBB"}]}
+    # h2 is newest and covers both holdings, but it is the wrong horizon.
+    assert web._fund_run(state) == "20260831-171523-full15y"
