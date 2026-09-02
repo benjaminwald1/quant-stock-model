@@ -195,3 +195,68 @@ def test_take_profit_sells_only_the_name_at_its_peak():
     assert [s["ticker"] for s in sells] == ["AAA"]      # BBB is well off its high
     assert "session high" in sells[0]["reason"]
     assert [h["ticker"] for h in out["holdings"]] == ["BBB"]
+
+
+def test_resting_orders_are_repriced_against_the_current_close():
+    """A carried order must not stay anchored to a stale close.
+
+    Orders that do not fill are carried to the next session. Left untouched
+    they keep the reference price and depth they were placed with, so a
+    Monday order is still quoting Monday's close on Thursday — and a change
+    to the configured depth never reaches them, leaving the book running two
+    different rules at once.
+    """
+    idx = pd.to_datetime(["2026-08-31"])
+    closes = pd.DataFrame({"AAA": [100.0], "NEW": [200.0]}, index=idx)
+    ranks = pd.DataFrame({"AAA": [95.0], "NEW": [99.0]}, index=idx)
+    prices = {"AAA": 100.0, "NEW": 200.0}
+    state = {
+        "budget": 5000.0, "cash": 1000.0, "mode": "autopilot",
+        "holdings": [{"ticker": "AAA", "shares": 1, "entry_price": 100.0, "entry_date": "x"}],
+        # placed days ago, off a 180.00 close at 1% depth, and never filled
+        "orders": [{"ticker": "NEW", "reference": 180.0, "limit": 178.2,
+                    "budget": 500.0, "rank": 99.0, "placed": "old"}],
+        "trades": [],
+    }
+    out = fd.rebalance(state, closes, ranks, live_prices=prices, market_open=True,
+                       reference_prices={"AAA": 100.0, "NEW": 200.0}, dip_pct=0.005)
+
+    order = next(o for o in out["orders"] if o["ticker"] == "NEW")
+    assert order["reference"] == 200.0          # today's close, not the stale one
+    assert order["limit"] == 199.0              # and today's configured 0.5%
+
+
+def test_benchmark_anchors_to_inception_and_survives_timestamps():
+    """The vs-benchmark figure silently never appeared for the fund's whole life.
+
+    History rows stamp a full ISO datetime while a daily close series is indexed
+    at midnight, so `bc.loc[hist[0]["date"]]` raised KeyError straight into a
+    bare except and the comparison vanished with no error anywhere. This pins
+    the two things that fixed it: normalise to a date and take the last close
+    on or before, and anchor to the first trade rather than the first
+    mark-to-market row.
+    """
+    import pandas as pd
+
+    idx = pd.to_datetime(["2026-08-28", "2026-08-31", "2026-09-01"])
+    bc = pd.Series([760.0, 767.05, 761.92], index=idx).sort_index()
+
+    trades = [{"date": "2026-08-31T07:06:06", "action": "buy", "ticker": "AAA"}]
+    hist = [{"date": "2026-09-01T06:44:00", "value": 4990.0},
+            {"date": "2026-09-01T12:33:20", "value": 4976.94}]
+
+    stamps = [t["date"] for t in trades if t["action"] in ("buy", "sell")]
+    stamps += [h["date"] for h in hist]
+    first = pd.Timestamp(min(stamps)).normalize()
+    last = pd.Timestamp(hist[-1]["date"]).normalize()
+
+    a, b = bc.asof(first), bc.asof(last)
+    assert a == 767.05 and b == 761.92          # inception, not "today vs today"
+    assert first == pd.Timestamp("2026-08-31")  # the trade, not the history row
+
+    # A timestamp with a time component must not blow up the lookup.
+    assert bc.asof(pd.Timestamp("2026-09-01T12:33:20")) == 761.92
+
+    # Fully invested and fractional, so cash drag does not flatter the fund.
+    units = 5000 / float(a)
+    assert round(units * float(b), 2) == 4966.56

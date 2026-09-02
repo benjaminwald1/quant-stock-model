@@ -33,7 +33,14 @@ DEFAULTS: dict = {
     "live_autoupdate": False,
     "live_interval_s": 20,
     "watchlist_autoupdate": True,
-    "dip_pct": 0.01,               # limit-order depth below the reference price
+    # How far under the previous close the buy limit sits. Swept in
+    # experiments/dip_depth.py, chosen on 2022-2024 and scored on 2025-2026:
+    # every depth shallower than 1% beat 1% on both halves, and going deeper
+    # was monotonically worse (2% earned 1.52% a year on the holdout against
+    # 16.80% at 0.5%). Waiting for a big dip mostly means missing the names
+    # that ran. 0.5% is the middle of the supported range rather than the
+    # single best cell, which would be fitting the sweep.
+    "dip_pct": 0.005,
     "fund_sizing": "equity",       # size slots off total equity, so gains compound
     # Trading frequency, chosen out of sample in experiments/tune_exit.py: the
     # band was picked on 2022-2024 and scored on 2025-2026, which had no say in

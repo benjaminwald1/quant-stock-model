@@ -159,7 +159,7 @@ def clear() -> None:
 def rebalance(state: dict, closes, ranks, enter_above: float = 90.0,
               exit_below: float = 30.0, max_positions: int = 10,
               live_prices: dict | None = None, market_open: bool = True,
-              dip_pct: float = 0.01, reference_prices: dict | None = None,
+              dip_pct: float = 0.005, reference_prices: dict | None = None,
               sizing: str = "equity", take_profit: str = "off",
               peak_lookback: int = 60) -> dict:
     """Act on the model's signal for one session.
@@ -293,6 +293,17 @@ def rebalance(state: dict, closes, ranks, enter_above: float = 90.0,
                               f"{(1 - px / order['reference']) * 100:.1f}% below {order['reference']:.2f}",
                 })
                 continue
+        # Re-anchor before carrying it forward. An order placed on Monday is
+        # priced off Monday's close; by Thursday that is not "the previous
+        # close" any more, and it also ignores any change to the configured
+        # depth — which is how the book ended up running a mix of 1.0% and
+        # 0.5% orders at the same time.
+        ref_now = prev_close.get(t)
+        if ref_now:
+            order = {**order, "reference": round(float(ref_now), 4),
+                     "reference_kind": "previous close",
+                     "limit": round(float(ref_now) * (1 - dip_pct), 4),
+                     "gap_pct": round((px / float(ref_now) - 1) * 100, 2)}
         still_open.append(order)
 
     # ── place limit orders for names the model rates but we do not hold ──

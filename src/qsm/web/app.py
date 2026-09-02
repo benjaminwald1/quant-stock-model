@@ -532,17 +532,41 @@ def _fund_state():
             bc = spy.pivot(index="date", columns="ticker", values="close")[bench_sym]
             hist = state.get("history") or []
             if hist:
-                first, last = hist[0]["date"], hist[-1]["date"]
-                a, b = float(bc.loc[first]), float(bc.loc[last])
-                sh = int(state["budget"] // a)
-                val = sh * b + (state["budget"] - sh * a)
-                state["benchmark_result"] = {
-                    "ticker": bench_sym, "shares": sh,
-                    "entry_price": round(a, 2), "price": round(b, 2),
-                    "value": round(val, 2), "pnl": round(val - state["budget"], 2),
-                    "pnl_pct": round((val / state["budget"] - 1) * 100, 3),
-                }
-                state["vs_benchmark"] = round(state["pnl"] - state["benchmark_result"]["pnl"], 2)
+                # History stamps are full ISO datetimes; the benchmark is daily
+                # closes at midnight, so a direct .loc raised KeyError straight
+                # into the except below and the comparison silently never
+                # appeared. Normalise, and take the last close on or before.
+                bc = bc.sort_index()
+                # Inception is the first trade, not the first mark-to-market
+                # row: `history` only starts at the first rebalance and gets
+                # truncated, so anchoring to it can quietly compare the fund's
+                # whole life against the benchmark's last few hours.
+                stamps = [t["date"] for t in (state.get("trades") or [])
+                          if t.get("action") in ("buy", "sell")]
+                stamps += [h["date"] for h in hist]
+                first = pd.Timestamp(min(stamps)).normalize()
+                last = pd.Timestamp(hist[-1]["date"]).normalize()
+                a, b = bc.asof(first), bc.asof(last)
+                if a == a and b == b and a > 0:
+                    a, b = float(a), float(b)
+                    # Fully invested, fractional: the question is "what if the
+                    # money had just gone into the index", and whole shares of a
+                    # $765 ETF would leave 8% of a $5,000 budget in cash and
+                    # quietly flatter the fund it is being compared against.
+                    units = state["budget"] / a
+                    val = units * b
+                    state["benchmark_result"] = {
+                        "ticker": bench_sym, "shares": round(units, 4),
+                        "entry_price": round(a, 2), "price": round(b, 2),
+                        "value": round(val, 2), "pnl": round(val - state["budget"], 2),
+                        "pnl_pct": round((val / state["budget"] - 1) * 100, 3),
+                        "since": str(first.date()),
+                    }
+                    state["vs_benchmark"] = round(
+                        state["pnl"] - state["benchmark_result"]["pnl"], 2)
+                else:
+                    log.warning("benchmark %s has no close on or before %s",
+                                bench_sym, first.date())
         except Exception as exc:
             log.warning("fund benchmark failed: %s", exc)
         # Mark holdings at live prices where available.
