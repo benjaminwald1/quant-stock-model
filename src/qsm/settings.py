@@ -53,7 +53,11 @@ DEFAULTS: dict = {
     # either way. It still bites on a small universe like dow30.
     "fund_enter_above": 90.0,
     "fund_exit_below": 30.0,
-    "fund_max_positions": 10,
+    # Swept in experiments/reach_for_return.py on the same split. Five beat ten
+    # on both halves (holdout 18.48% a year against 16.80%, selection worst year
+    # -2.70% against -9.08%). Going further hurts: three and two concentrate the
+    # model's mistakes as readily as its ideas, and two drew down 43%.
+    "fund_max_positions": 5,
     # Sell winners at a peak. Off because it was measured and it loses: on the
     # holdout, 5.49% a year selling at a 60-session high and 8.87% selling at
     # the model's 80% upper band, against 12.30% for leaving it to the rank

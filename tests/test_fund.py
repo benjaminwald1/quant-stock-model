@@ -81,6 +81,9 @@ def test_does_not_trade_while_the_exchange_is_shut():
     assert out["blocked_reason"] == "market closed"
 
 
+SLOTS = 10
+
+
 def test_equity_sizing_grows_the_slot_as_the_fund_grows():
     """Profit is put back to work rather than sitting as a bigger cash pile.
 
@@ -100,13 +103,17 @@ def test_equity_sizing_grows_the_slot_as_the_fund_grows():
             "orders": [], "trades": [],
         }
         out = fd.rebalance(state, closes, ranks, live_prices=prices, market_open=True,
-                           reference_prices=prices, sizing="equity")
+                           reference_prices=prices, sizing="equity",
+                           max_positions=SLOTS)
         return next(o["budget"] for o in out["orders"] if o["ticker"] == "NEW")
 
+    # Pinned to an explicit slot count: the point is that the slot tracks total
+    # equity, which should not have to be re-baselined every time the default
+    # position count is retuned.
     small, large = slot_for(10), slot_for(40)      # $1,000 vs $4,000 of stock
     assert large > small
-    assert small == round((1000.0 + 10 * 100.0) / 10, 2)
-    assert large == round((1000.0 + 40 * 100.0) / 10, 2)
+    assert small == round((1000.0 + 10 * 100.0) / SLOTS, 2)
+    assert large == round((1000.0 + 40 * 100.0) / SLOTS, 2)
 
 
 def test_a_slot_never_exceeds_available_cash():

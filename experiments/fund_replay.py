@@ -92,6 +92,7 @@ def replay(run: str, panel_path: str, months: int = 3, budget: float = 5000.0,
         raise SystemExit("not enough overlapping sessions")
 
     cash = float(budget)
+    equity_curve: list[float] = []
     cost_rate = cost_bps / 10_000.0
     costs_paid = 0.0
     holdings: dict[str, dict] = {}
@@ -183,6 +184,8 @@ def replay(run: str, panel_path: str, months: int = 3, budget: float = 5000.0,
                                    "value": round(shares * fill, 2)})
                 orders.pop(t, None)
 
+        equity_curve.append(equity(day))
+
         # ── place new orders ─────────────────────────────────────────────
         orders.clear()                                  # orders are good for one session
         room = max_positions - len(holdings)
@@ -218,6 +221,14 @@ def replay(run: str, panel_path: str, months: int = 3, budget: float = 5000.0,
 
     end = dates[-1]
     value = equity(end)
+    # Worst peak-to-trough on the equity curve: the number that decides whether
+    # a strategy is survivable, not just whether it finishes up.
+    peak, max_dd = -1e18, 0.0
+    for v in equity_curve:
+        peak = max(peak, v)
+        if peak > 0:
+            max_dd = min(max_dd, v / peak - 1)
+
     sells = [t for t in trades if t["action"] == "sell"]
     wins = [t for t in sells if t["pnl"] > 0]
     return {
@@ -230,6 +241,7 @@ def replay(run: str, panel_path: str, months: int = 3, budget: float = 5000.0,
         "sells": len(sells),
         "realised": round(sum(t["pnl"] for t in sells), 2),
         "win_rate": round(len(wins) / len(sells), 3) if sells else None,
+        "max_drawdown_pct": round(max_dd * 100, 2),
         "costs_paid": round(costs_paid, 2), "cost_bps": cost_bps,
         "turnover_trades": sum(1 for t in trades if t["action"] in ("buy", "sell")),
         "benchmark_pct": round(bench_pct, 2),

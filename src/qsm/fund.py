@@ -157,7 +157,7 @@ def clear() -> None:
 # Autopilot: signal-driven entry and exit
 # --------------------------------------------------------------------------
 def rebalance(state: dict, closes, ranks, enter_above: float = 90.0,
-              exit_below: float = 30.0, max_positions: int = 10,
+              exit_below: float = 30.0, max_positions: int = 5,
               live_prices: dict | None = None, market_open: bool = True,
               dip_pct: float = 0.005, reference_prices: dict | None = None,
               sizing: str = "equity", take_profit: str = "off",
