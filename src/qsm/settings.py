@@ -24,7 +24,12 @@ DEFAULTS: dict = {
     "currency_symbols": True,
     # run defaults
     "default_universe": "sp500",
-    "default_horizon": 5,
+    # Swept 1/2/5/10/21 on the full 15-year, 4,168-name panel
+    # (experiments/, logs/long_horizon.log). Net Sharpe rises monotonically with
+    # the horizon — -1.40, -0.12, 0.21, 0.28, 0.35 — while gross Sharpe *falls*
+    # (0.82 -> 0.47). The gain is trading costs collapsing with turnover
+    # (115% -> 5.8% daily), not the model getting smarter.
+    "default_horizon": 21,
     "default_folds": 6,
     "default_cost_bps": 10.0,
     "default_quantile": 0.1,

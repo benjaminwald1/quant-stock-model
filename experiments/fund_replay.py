@@ -59,7 +59,8 @@ def replay(run: str, panel_path: str, months: int = 3, budget: float = 5000.0,
            max_positions: int = 10, dip_pct: float = 0.01, end: str | None = None,
            cost_bps: float = 10.0, take_profit: str | None = None,
            peak_lookback: int = 60, hedge: float = 0.0,
-           hedge_symbol: str = "SPY", borrow_bps_yr: float = 100.0) -> dict:
+           hedge_symbol: str = "SPY", borrow_bps_yr: float = 100.0,
+           park_cash: bool = False) -> dict:
     view = stocks_mod.load_view(Path("runs") / run)
     px = pd.read_parquet(panel_path)
     px["date"] = pd.to_datetime(px["date"])
@@ -95,8 +96,14 @@ def replay(run: str, panel_path: str, months: int = 3, budget: float = 5000.0,
     # Short `hedge` x the invested value in the index. The model is calibrated
     # on return *relative to the universe* — its own calibration demeans each
     # date — so a long-only book carries a market bet the model never made.
+    # Idle cash earns nothing while the thing that actually pays this strategy
+    # is market exposure. Parking it in the index keeps the book fully invested
+    # between fills, and is sold down first whenever a limit order hits.
+    park_px = None
+    park_units = 0.0
+
     hedge_px = None
-    if hedge > 0:
+    if hedge > 0 or park_cash:
         try:
             from qsm.live import fetch_live
             hp = fetch_live([hedge_symbol], start="2011-08-31")
@@ -104,6 +111,8 @@ def replay(run: str, panel_path: str, months: int = 3, budget: float = 5000.0,
                                 values="close")[hedge_symbol].sort_index()
         except Exception:
             hedge_px = None
+    if park_cash:
+        park_px = hedge_px
 
     cash = float(budget)
     hedge_units = 0.0            # negative: shares of the index sold short
@@ -122,6 +131,12 @@ def replay(run: str, panel_path: str, months: int = 3, budget: float = 5000.0,
         v = hedge_px.asof(day)
         return float(v) if v == v else None
 
+    def park_price(day):
+        if park_px is None:
+            return None
+        v = park_px.asof(day)
+        return float(v) if v == v else None
+
     def equity(day):
         held = sum(h["shares"] * float(close.loc[day, h["ticker"]])
                    for h in holdings.values()
@@ -133,7 +148,12 @@ def replay(run: str, panel_path: str, months: int = 3, budget: float = 5000.0,
                 # Short: gains when the index falls. Proceeds are already in
                 # `cash`, so only the mark-to-market difference is added.
                 short_pl = hedge_basis - abs(hedge_units) * hp
-        return cash + held + short_pl
+        parked = 0.0
+        if park_units:
+            pp = park_price(day)
+            if pp is not None:
+                parked = park_units * pp
+        return cash + held + parked + short_pl
 
     for i in range(1, len(dates)):
         day, prev = dates[i], dates[i - 1]
@@ -193,6 +213,15 @@ def replay(run: str, panel_path: str, months: int = 3, budget: float = 5000.0,
                 continue
             if float(lo) <= o["limit"]:
                 fill = o["limit"]                      # filled at the limit, not the low
+                need = o["budget"]
+                if park_cash and cash < need and park_units:
+                    pp = park_price(day)
+                    if pp is not None:                 # raise only what is short
+                        want = min(park_units * pp, need - cash)
+                        fee = want * cost_rate
+                        costs_paid += fee
+                        cash += want - fee
+                        park_units -= want / pp
                 shares = int(o["budget"] // (fill * (1 + cost_rate)))
                 if shares > 0 and shares * fill * (1 + cost_rate) <= cash:
                     fee = shares * fill * cost_rate
@@ -233,6 +262,22 @@ def replay(run: str, panel_path: str, months: int = 3, budget: float = 5000.0,
                     hedge_basis = want * hp
                 else:
                     hedge_basis += 0.0
+
+        # Rebalance the parked sleeve by its *difference* only. Selling and
+        # rebuying the whole balance daily costs 10bps twice a day — about 50%
+        # a year — which swamped the experiment and produced a loss that was
+        # arithmetically impossible for a rising index.
+        if park_cash:
+            pp = park_price(day)
+            if pp is not None:
+                parked_val = park_units * pp
+                target = max(0.0, cash + parked_val - float(budget) * 0.02)
+                delta = target - parked_val
+                if abs(delta) > float(budget) * 0.02:      # worth a ticket
+                    fee = abs(delta) * cost_rate
+                    costs_paid += fee
+                    cash -= delta + fee
+                    park_units += delta / pp
 
         equity_curve.append(equity(day))
 
@@ -292,7 +337,7 @@ def replay(run: str, panel_path: str, months: int = 3, budget: float = 5000.0,
         "realised": round(sum(t["pnl"] for t in sells), 2),
         "win_rate": round(len(wins) / len(sells), 3) if sells else None,
         "max_drawdown_pct": round(max_dd * 100, 2),
-        "hedge": hedge,
+        "hedge": hedge, "park_cash": park_cash,
         "costs_paid": round(costs_paid, 2), "cost_bps": cost_bps,
         "turnover_trades": sum(1 for t in trades if t["action"] in ("buy", "sell")),
         "benchmark_pct": round(bench_pct, 2),
